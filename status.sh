@@ -1,124 +1,129 @@
 #!/bin/bash
-# GPU VM status: GPU, CPU, RAM, disk, model services and vLLM load.
-# Usage: status.sh          one snapshot
-#        status.sh -w [N]   refresh every N seconds (default 5), Ctrl+C to stop
-#        status.sh -d       also show disk usage per /workspace folder (slower)
-
+# Live GPU VM dashboard: GPU, CPU, RAM, disk, services, LLM/STT load and token throughput.
+# Usage: status.sh               live view, refreshes every 1 s (Ctrl+C to exit)
+#        status.sh -i 2          live view, refresh every 2 s
+#        status.sh --once        print one snapshot and exit
 WS=${WS:-/workspace}
-SERVICES="llm:8000 stt:8001 tts:8002"
-WATCH=0; INTERVAL=5; DETAIL=0
+INTERVAL=1; ONCE=0
 while [ $# -gt 0 ]; do
   case "$1" in
-    -w) WATCH=1; [[ "${2:-}" =~ ^[0-9]+$ ]] && { INTERVAL=$2; shift; } ;;
-    -d) DETAIL=1 ;;
+    -i) INTERVAL=$2; shift ;;
+    --once|-1) ONCE=1 ;;
     -h|--help) sed -n '2,5p' "$0"; exit 0 ;;
   esac; shift
 done
 
-B=$'\e[1m'; G=$'\e[32m'; Y=$'\e[33m'; R=$'\e[31m'; N=$'\e[0m'
-hdr() { printf "\n${B}== %s ==${N}\n" "$1"; }
-pct_color() { local p=${1%.*}; [ -z "$p" ] && p=0
-  if [ "$p" -ge 90 ]; then printf "%s" "$R"; elif [ "$p" -ge 75 ]; then printf "%s" "$Y"; else printf "%s" "$G"; fi; }
-bar() { local p=${1%.*}; [ -z "$p" ] && p=0; [ "$p" -gt 100 ] && p=100
-  local f=$((p/5)); printf "%s[" "$(pct_color "$p")"; printf "%${f}s" "" | tr ' ' '#'
-  printf "%$((20-f))s" "" | tr ' ' '.'; printf "] %3s%%%s" "$p" "$N"; }
+B=$'\e[1m'; D=$'\e[2m'; G=$'\e[32m'; Y=$'\e[33m'; R=$'\e[31m'; C=$'\e[36m'; N=$'\e[0m'
+SPARK=(▁ ▂ ▃ ▄ ▅ ▆ ▇ █); HIST=30
 
-cpu_pct() {  # CPU busy % over 1 second from /proc/stat
-  read -r _ a b c d e f g h _ < /proc/stat 2>/dev/null || { echo "?"; return; }
-  local t1=$((a+b+c+d+e+f+g+h)) i1=$((d+e)); sleep 1
-  read -r _ a b c d e f g h _ < /proc/stat
-  local t2=$((a+b+c+d+e+f+g+h)) i2=$((d+e)) dt
-  dt=$((t2-t1)); [ "$dt" -le 0 ] && { echo 0; return; }
-  echo $(( (100*(dt-(i2-i1)))/dt ))
-}
+col() { local p=${1%.*}; [ -z "$p" ] && p=0
+  if [ "$p" -ge 90 ]; then printf %s "$R"; elif [ "$p" -ge 75 ]; then printf %s "$Y"; else printf %s "$G"; fi; }
+bar() { local p=${1%.*}; [ -z "$p" ] && p=0; [ "$p" -gt 100 ] && p=100; local f=$((p/5))
+  printf "%s[" "$(col "$p")"; printf "%${f}s" "" | tr ' ' '#'; printf "%$((20-f))s" "" | tr ' ' '.'; printf "]%s %3s%%" "$N" "$p"; }
+# spark <max> <values...>  ->  sparkline of the values scaled to max
+spark() { local max=$1; shift; local out="" v i
+  for v in "$@"; do i=$(awk -v v="$v" -v m="$max" 'BEGIN{ if (m<=0) {print 0; exit} i=int(v/m*7+0.5); if (i>7) i=7; if (i<0) i=0; print i }')
+    out+="${SPARK[$i]}"; done; printf "%s%s%s" "$C" "$out" "$N"; }
+push() { local -n arr=$1; arr+=("$2"); [ "${#arr[@]}" -gt "$HIST" ] && arr=("${arr[@]:1}"); }
+f1() { awk -v x="$1" 'BEGIN{printf "%.1f", x}'; }
 
-metric() {  # metric <port> <name1> [name2...]: sum a Prometheus metric from vLLM /metrics
-  local port=$1; shift; local data; data=$(curl -s -m 2 "localhost:$port/metrics") || return
-  for n in "$@"; do
-    local v; v=$(printf "%s\n" "$data" | awk -v n="$n" '$1==n || index($1, n"{")==1 {s+=$2; f=1} END{if(f) print s}')
-    [ -n "$v" ] && { echo "$v"; return; }
-  done
-}
+# metrics <port>: prints key=value for the vLLM metrics we use (sums over label sets)
+metrics() { curl -s -m 1 "localhost:$1/metrics" | awk '
+  /^vllm:/ { n=$1; sub(/\{.*/, "", n); v[n]+=$NF; if (!model && match($0, /model_name="[^"]*"/)) model=substr($0, RSTART+12, RLENGTH-13) }
+  END { for (k in v) print k "=" v[k]; if (model) print "model=" model }'; }
+mget() { printf "%s\n" "$1" | awk -F= -v k="$2" '$1==k {print $2; exit}'; }
 
-snapshot() {
-  printf "${B}GPU VM status${N}  %s  host %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$(hostname)"
+# CPU % from /proc/stat deltas between frames (no sleeping)
+read_cpu() { read -r _ a b c d e f g h _ < /proc/stat; CPU_T=$((a+b+c+d+e+f+g+h)); CPU_I=$((d+e)); }
+read_cpu; PREV_T=$CPU_T; PREV_I=$CPU_I; sleep 0.3   # short baseline so the first CPU reading is real
 
-  hdr "GPU"
+declare -a H_UTIL=() H_GEN=()
+PREV_GEN=""; PREV_PROMPT=""; PREV_REQ=""; PREV_TS=""
+DISK_CACHE=""; DISK_TS=0
+
+frame() {
+  local now ts out; now=$(date '+%Y-%m-%d %H:%M:%S'); ts=$(date +%s.%N)
+  out="${B}GPU VM live${N}  $now  ${D}$(hostname)${N}\n"
+
+  # --- GPU ---
+  out+="\n${B}GPU${N}\n"
   if command -v nvidia-smi >/dev/null; then
-    nvidia-smi --query-gpu=index,name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw,power.limit \
-      --format=csv,noheader,nounits 2>/dev/null | while IFS=, read -r idx name used total util temp pw pl; do
-      used=${used// /}; total=${total// /}; util=${util// /}
-      local_pct=$(( used*100/total ))
-      printf "GPU%s %s\n" "$idx" "$(echo $name)"
-      printf "  VRAM   %s  %s / %s GiB used, %s GiB free\n" "$(bar $local_pct)" \
-        "$(awk "BEGIN{printf \"%.1f\",$used/1024}")" "$(awk "BEGIN{printf \"%.1f\",$total/1024}")" \
-        "$(awk "BEGIN{printf \"%.1f\",($total-$used)/1024}")"
-      printf "  Util   %s\n" "$(bar $util)"
-      printf "  Temp   %s C    Power %s / %s W\n" "$(echo $temp)" "$(echo ${pw%.*})" "$(echo ${pl%.*})"
-    done
-    apps=$(nvidia-smi --query-compute-apps=pid,used_memory,process_name --format=csv,noheader 2>/dev/null)
-    # In this sandbox every GPU process is reported as PID 1 (env-injector) with the total VRAM; hide that
-    if [ -n "$apps" ] && printf "%s\n" "$apps" | grep -qv '^1,'; then
-      echo "  Processes (pid, VRAM, name):"; printf "%s\n" "$apps" | sed 's/^/    /'
-    else echo "  (per-process VRAM not visible inside this container)"; fi
-  else echo "nvidia-smi not found"; fi
+    IFS=, read -r name used total util temp pw pl < <(nvidia-smi --query-gpu=name,memory.used,memory.total,utilization.gpu,temperature.gpu,power.draw,power.limit --format=csv,noheader,nounits 2>/dev/null | head -1)
+    used=${used// /}; total=${total// /}; util=${util// /}
+    push H_UTIL "${util:-0}"
+    out+="  $(echo $name)   ${temp// /} C   $(echo ${pw%.*}) / $(echo ${pl%.*}) W\n"
+    out+="  VRAM  $(bar $(( used*100/total )))  $(f1 "$(awk "BEGIN{print $used/1024}")") / $(f1 "$(awk "BEGIN{print $total/1024}")") GiB\n"
+    out+="  Util  $(bar "$util")  $(spark 100 "${H_UTIL[@]}")\n"
+  else out+="  nvidia-smi not found\n"; fi
 
-  hdr "CPU / RAM"
-  local ncpu cpu la
-  ncpu=$(nproc); cpu=$(cpu_pct); read -r l1 l5 l15 _ < /proc/loadavg
-  printf "CPU    %s  (%s vCPU)   load avg %s %s %s\n" "$(bar $cpu)" "$ncpu" "$l1" "$l5" "$l15"
-  read -r mt mu ma < <(free -b | awk '/^Mem:/{print $2,$3,$7}')
-  printf "RAM    %s  %s / %s GiB used, %s GiB available\n" "$(bar $(( mu*100/mt )))" \
-    "$(awk "BEGIN{printf \"%.1f\",$mu/2^30}")" "$(awk "BEGIN{printf \"%.1f\",$mt/2^30}")" "$(awk "BEGIN{printf \"%.1f\",$ma/2^30}")"
+  # --- CPU / RAM ---
+  read_cpu; local dt=$((CPU_T-PREV_T)) di=$((CPU_I-PREV_I)) cpu=0
+  [ "$dt" -gt 0 ] && cpu=$(( 100*(dt-di)/dt )); PREV_T=$CPU_T; PREV_I=$CPU_I
+  read -r mt mu < <(free -b | awk '/^Mem:/{print $2,$3}')
+  out+="\n${B}Host${N}\n"
+  out+="  CPU   $(bar $cpu)  $(nproc) vCPU\n"
+  out+="  RAM   $(bar $(( mu*100/mt )))  $(f1 "$(awk "BEGIN{print $mu/2^30}")") / $(f1 "$(awk "BEGIN{print $mt/2^30}")") GiB\n"
+  # disk changes slowly: refresh every 30 s
+  if [ $(( ${ts%.*} - DISK_TS )) -ge 30 ] || [ -z "$DISK_CACHE" ]; then
+    DISK_CACHE=$(df -P -B1 "$WS" 2>/dev/null | awk 'NR==2{print $2,$3}'); DISK_TS=${ts%.*}; fi
+  read -r ds du_ <<< "$DISK_CACHE"
+  [ -n "$ds" ] && out+="  Disk  $(bar $(( du_*100/ds )))  $(f1 "$(awk "BEGIN{print $du_/2^30}")") / $(f1 "$(awk "BEGIN{print $ds/2^30}")") GiB  ($WS)\n"
 
-  hdr "Disk"
-  df -P -B1 "$WS" /dev/shm 2>/dev/null | awk 'NR>1{print $6,$2,$3,$4}' | while read -r mnt size used avail; do
-    [ "$size" -gt 0 ] 2>/dev/null || continue
-    printf "%-11s %s  %s / %s GiB used, %s GiB free\n" "$mnt" "$(bar $(( used*100/size )))" \
-      "$(awk "BEGIN{printf \"%.1f\",$used/2^30}")" "$(awk "BEGIN{printf \"%.1f\",$size/2^30}")" "$(awk "BEGIN{printf \"%.1f\",$avail/2^30}")"
-  done
-  [ -d "$WS/logs" ] && printf "logs        %s\n" "$(du -sh "$WS/logs" 2>/dev/null | cut -f1)"
-  if [ "$DETAIL" = 1 ] && [ -d "$WS" ]; then
-    echo "Per folder:"; du -sh "$WS"/* 2>/dev/null | sort -rh | head -10 | sed 's/^/  /'
-  fi
-
-  hdr "Services"
-  for s in $SERVICES; do
+  # --- services ---
+  out+="\n${B}Services${N}\n"
+  local s name port code st up
+  for s in llm:8000 stt:8001 tts:8002; do
     name=${s%%:*}; port=${s##*:}
-    res=$(curl -s -o /dev/null -m 3 -w '%{http_code} %{time_total}' "localhost:$port/health")
-    code=${res%% *}; t=${res##* }
-    case "$code" in
-      200) st="${G}UP${N}      " ;;
-      503) st="${Y}LOADING${N} " ;;
-      000) st="${R}DOWN${N}    " ;;
-      *)   st="${Y}HTTP $code${N}" ;;
-    esac
+    code=$(curl -s -o /dev/null -m 1 -w '%{http_code}' "localhost:$port/health")
+    case "$code" in 200) st="${G}● UP     ${N}";; 503) st="${Y}● LOADING${N}";; *) st="${R}● DOWN   ${N}";; esac
     up=$(ps -eo etime=,args= 2>/dev/null | grep -E -- "--port $port( |$)" | grep -v grep | awk '{print $1; exit}')
-    printf "%-4s :%-5s %b  health %3s ms   uptime %s\n" "$name" "$port" "$st" \
-      "$(awk "BEGIN{printf \"%d\",$t*1000}")" "${up:--}"
+    out+="  $(printf '%-4s' $name) :$port  $st  uptime ${up:--}\n"
   done
 
-  hdr "Model load (vLLM)"
-  for s in llm:8000 stt:8001; do
-    name=${s%%:*}; port=${s##*:}
-    run=$(metric "$port" vllm:num_requests_running); wait_=$(metric "$port" vllm:num_requests_waiting)
-    kv=$(metric "$port" vllm:kv_cache_usage_perc vllm:gpu_cache_usage_perc)
-    if [ -z "$run" ]; then printf "%-4s no metrics (service down?)\n" "$name"; continue; fi
-    if [ -z "$kv" ]; then
-      printf "%-4s running %-3s waiting %-3s KV cache n/a (metric not exposed)\n" "$name" "${run%.*}" "${wait_%.*}"
-      continue
+  # --- LLM load + throughput ---
+  local m run wait kv gen prompt req model gr pr rr
+  m=$(metrics 8000)
+  out+="\n${B}LLM${N}"
+  if [ -n "$m" ]; then
+    model=$(mget "$m" model); run=$(mget "$m" vllm:num_requests_running); wait=$(mget "$m" vllm:num_requests_waiting)
+    kv=$(mget "$m" vllm:kv_cache_usage_perc); [ -z "$kv" ] && kv=$(mget "$m" vllm:gpu_cache_usage_perc)
+    gen=$(mget "$m" vllm:generation_tokens_total); prompt=$(mget "$m" vllm:prompt_tokens_total); req=$(mget "$m" vllm:request_success_total)
+    gr=0; pr=0; rr=0
+    if [ -n "$PREV_TS" ] && [ -n "$gen" ] && [ -n "$PREV_GEN" ]; then
+      gr=$(awk -v a="$gen" -v b="$PREV_GEN" -v t="$ts" -v u="$PREV_TS" 'BEGIN{d=t-u; if (d<=0||a<b) print 0; else printf "%.0f", (a-b)/d}')
+      pr=$(awk -v a="$prompt" -v b="$PREV_PROMPT" -v t="$ts" -v u="$PREV_TS" 'BEGIN{d=t-u; if (d<=0||a<b) print 0; else printf "%.0f", (a-b)/d}')
+      rr=$(awk -v a="${req:-0}" -v b="${PREV_REQ:-0}" 'BEGIN{ if (a<b) print 0; else printf "%.0f", a-b}')
     fi
-    # bar needs a whole number; round any non-zero usage up to at least 1% so activity is visible
-    kvp=$(awk -v k="$kv" 'BEGIN{p=k*100; i=int(p); if (p>i) i++; print i}')
-    kvd=$(awk -v k="$kv" 'BEGIN{printf "%.2f", k*100}')
-    printf "%-4s running %-3s waiting %-3s KV cache %s  (%s%% exact)\n" "$name" "${run%.*}" "${wait_%.*}" "$(bar $kvp)" "$kvd"
-  done
-  echo "(KV cache is only used while requests run, so 0% when idle is normal; waiting > 0 means queuing)"
+    PREV_GEN=$gen; PREV_PROMPT=$prompt; PREV_REQ=$req; PREV_TS=$ts
+    push H_GEN "$gr"
+    local gmax; gmax=$(printf "%s\n" "${H_GEN[@]}" | sort -n | tail -1); [ "${gmax:-0}" -lt 50 ] && gmax=50
+    out+="  ${D}${model:-?}${N}\n"
+    out+="  Requests  running ${B}${run%.*}${N}  waiting $( [ "${wait%.*}" -gt 0 ] 2>/dev/null && printf %s "$Y${wait%.*}$N" || printf %s "${wait%.*}")  done total ${req%.*}"
+    [ "$rr" -gt 0 ] 2>/dev/null && out+="  ${G}+$rr${N}"
+    out+="\n"
+    if [ -n "$kv" ]; then
+      local kvp kvd; kvp=$(awk -v k="$kv" 'BEGIN{p=k*100; i=int(p); if (p>i) i++; print i}'); kvd=$(awk -v k="$kv" 'BEGIN{printf "%.2f", k*100}')
+      out+="  KV cache  $(bar "$kvp")  ${D}${kvd}% exact${N}\n"
+    else out+="  KV cache  n/a\n"; fi
+    out+="  Tokens/s  generate ${B}$(printf '%5s' "$gr")${N}   prompt $(printf '%6s' "$pr")   $(spark "$gmax" "${H_GEN[@]}")\n"
+  else out+="\n  no metrics (down or starting)\n"; PREV_TS=""; fi
+
+  # --- STT ---
+  m=$(metrics 8001)
+  out+="\n${B}STT${N}"
+  if [ -n "$m" ]; then
+    out+="  ${D}$(mget "$m" model)${N}\n  Requests  running $(mget "$m" vllm:num_requests_running | cut -d. -f1)  waiting $(mget "$m" vllm:num_requests_waiting | cut -d. -f1)  done total $(mget "$m" vllm:request_success_total | cut -d. -f1)\n"
+  else out+="\n  no metrics (down or starting)\n"; fi
+
+  [ "$ONCE" = 0 ] && out+="\n${D}refresh ${INTERVAL}s · Ctrl+C to exit · status.sh --once for a single snapshot${N}\n"
+  FRAME="$out"
 }
 
-if [ "$WATCH" = 1 ]; then
-  trap 'printf "\n"; exit 0' INT
-  while true; do out=$(snapshot); clear; printf "%s\n" "$out"; printf "\nrefresh every %ss, Ctrl+C to stop\n" "$INTERVAL"; sleep "$INTERVAL"; done
-else
-  snapshot
-fi
+if [ "$ONCE" = 1 ]; then frame; printf "%b" "$FRAME"; exit 0; fi
+trap 'printf "\e[?25h\n"; exit 0' INT TERM
+printf "\e[?25l\e[2J"   # hide cursor, clear once
+while true; do
+  frame
+  printf "\e[H%b\e[J" "$FRAME"   # redraw in place: no flicker
+  sleep "$INTERVAL"
+done
