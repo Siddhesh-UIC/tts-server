@@ -57,7 +57,9 @@ snapshot() {
       printf "  Temp   %s C    Power %s / %s W\n" "$(echo $temp)" "$(echo ${pw%.*})" "$(echo ${pl%.*})"
     done
     apps=$(nvidia-smi --query-compute-apps=pid,used_memory,process_name --format=csv,noheader 2>/dev/null)
-    if [ -n "$apps" ]; then echo "  Processes (pid, VRAM, name):"; printf "%s\n" "$apps" | sed 's/^/    /'
+    # In this sandbox every GPU process is reported as PID 1 (env-injector) with the total VRAM; hide that
+    if [ -n "$apps" ] && printf "%s\n" "$apps" | grep -qv '^1,'; then
+      echo "  Processes (pid, VRAM, name):"; printf "%s\n" "$apps" | sed 's/^/    /'
     else echo "  (per-process VRAM not visible inside this container)"; fi
   else echo "nvidia-smi not found"; fi
 
@@ -102,10 +104,16 @@ snapshot() {
     run=$(metric "$port" vllm:num_requests_running); wait_=$(metric "$port" vllm:num_requests_waiting)
     kv=$(metric "$port" vllm:kv_cache_usage_perc vllm:gpu_cache_usage_perc)
     if [ -z "$run" ]; then printf "%-4s no metrics (service down?)\n" "$name"; continue; fi
-    kvp=$(awk "BEGIN{printf \"%d\",${kv:-0}*100}")
-    printf "%-4s running %-3s waiting %-3s KV cache %s\n" "$name" "${run%.*}" "${wait_%.*}" "$(bar $kvp)"
+    if [ -z "$kv" ]; then
+      printf "%-4s running %-3s waiting %-3s KV cache n/a (metric not exposed)\n" "$name" "${run%.*}" "${wait_%.*}"
+      continue
+    fi
+    # bar needs a whole number; round any non-zero usage up to at least 1% so activity is visible
+    kvp=$(awk -v k="$kv" 'BEGIN{p=k*100; i=int(p); if (p>i) i++; print i}')
+    kvd=$(awk -v k="$kv" 'BEGIN{printf "%.2f", k*100}')
+    printf "%-4s running %-3s waiting %-3s KV cache %s  (%s%% exact)\n" "$name" "${run%.*}" "${wait_%.*}" "$(bar $kvp)" "$kvd"
   done
-  echo "(waiting > 0 means requests are queuing; KV cache near 100% means the LLM is at capacity)"
+  echo "(KV cache is only used while requests run, so 0% when idle is normal; waiting > 0 means queuing)"
 }
 
 if [ "$WATCH" = 1 ]; then
