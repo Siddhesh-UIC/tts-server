@@ -28,6 +28,20 @@ If `TTS_REFERENCE_WAV` points to a missing file, the server refuses to start (ch
 
 Any recording works as a reference, including a real person's voice, but only with their consent.
 
+## Named voices (one per language)
+
+A request's `voice` field picks a clip from `voices/` next to `tts_server.py` (on the VM `/workspace/voices/`; set `TTS_VOICES_DIR` to use another folder):
+
+| `voice` | Clip | Transcript (closer cloning) |
+| --- | --- | --- |
+| `id` | `voices/id.wav`: Indonesian female, 12.4 s | `voices/id.txt` |
+| `ar` | `voices/ar.wav`: Arabic female, 13.4 s | `voices/ar.txt` |
+| none, or a name with no `.wav` | the fixed voice (`TTS_REFERENCE_WAV`) | `TTS_REFERENCE_TEXT` |
+
+The voice pipe sends the call's language (`en`, `id`, `ar`) as `voice`, so English keeps the fixed voice until there is an `en.wav`. Each response's `X-Voice` header names the voice used, and `GET /health` lists them under `"voices"`.
+
+Adding a voice: a clean 5–15 s mono WAV that starts and ends on a whole sentence, plus a `.txt` with exactly the words spoken (numbers and titles as said, e.g. "Mister", not "Mr."). Only plain names (letters, digits, `-`, `_`). It takes effect on the next request; no restart needed.
+
 ## Run
 
 ```bash
