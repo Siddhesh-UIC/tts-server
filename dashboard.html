@@ -1,0 +1,231 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>GPU model server</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Instrument+Sans:wght@400;500;600;700&display=swap" rel="stylesheet">
+<style>
+:root{
+  --bg:#EEF1EF; --surface:#F8FAF8; --ink:#1B2430; --muted:#5F6B76; --rule:#C9D1CC;
+  --llm:#0F6E8C; --stt:#A8641A; --tts:#7A4FB0; --sahabat:#2E7D52; --other:#4A5560;
+  --ok:#2E7D52; --warn:#B7791F; --bad:#C62F2F;
+  --font:"Instrument Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+}
+@media (prefers-color-scheme: dark){
+  :root{ --bg:#141A1F; --surface:#1B232A; --ink:#E6ECEF; --muted:#9AA7B1; --rule:#2E3A43;
+         --llm:#4FB3D1; --stt:#E0A050; --tts:#B08BE0; --sahabat:#5FC08A; --ok:#5FC08A; --warn:#E0A050; --bad:#F06A6A; }
+}
+*{box-sizing:border-box}
+html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font);font-variant-numeric:tabular-nums;font-size:15px;line-height:1.45}
+main{max-width:1280px;margin:0 auto;padding:20px 24px 48px}
+header{display:flex;align-items:baseline;justify-content:space-between;gap:16px;flex-wrap:wrap;padding-bottom:14px;border-bottom:2px solid var(--ink)}
+h1{font-size:1.65rem;font-weight:700;letter-spacing:-0.01em;margin:0}
+.sub{color:var(--muted);font-size:.9rem}
+#conn{font-weight:600}
+#conn.live{color:var(--ok)} #conn.lost{color:var(--bad)}
+h2{font-size:1.05rem;font-weight:600;margin:28px 0 8px}
+
+/* service lanes: the one bold element */
+.lanes{border-top:1px solid var(--rule)}
+.lane{display:grid;grid-template-columns:230px 1fr 260px;gap:18px;align-items:center;padding:14px 0 22px;border-bottom:1px solid var(--rule);border-left:6px solid var(--c);padding-left:14px}
+.lane .name{font-size:1.25rem;font-weight:700;color:var(--c);text-transform:none}
+.lane .model{color:var(--muted);font-size:.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.state{display:inline-flex;align-items:center;gap:6px;font-weight:600;font-size:.9rem;margin-top:2px}
+.state i{width:9px;height:9px;border-radius:50%;background:var(--muted);display:inline-block}
+.state.up i{background:var(--ok)} .state.loading i{background:var(--warn)} .state.down i{background:var(--bad)}
+.state.down{color:var(--bad)}
+.trace{position:relative;height:64px}
+.trace canvas{width:100%;height:64px;display:block}
+.trace .now{position:absolute;right:0;top:0;text-align:right;line-height:1.1}
+.trace .cap{position:absolute;left:0;bottom:-16px;font-size:.72rem;color:var(--muted)}
+.trace .now b{font-size:1.6rem;font-weight:700;color:var(--c)} .trace .now span{display:block;color:var(--muted);font-size:.78rem}
+.stats{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font-size:.88rem}
+.stats dt{color:var(--muted)} .stats dd{margin:0;text-align:right;font-weight:500}
+.kvbar{height:6px;background:var(--rule);border-radius:3px;overflow:hidden;margin-top:4px}
+.kvbar span{display:block;height:100%;background:var(--c)}
+
+/* machine strip */
+.machine{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:10px 28px;padding:12px 0;border-top:1px solid var(--rule);border-bottom:1px solid var(--rule)}
+.meter .lbl{display:flex;justify-content:space-between;font-size:.88rem}
+.meter .lbl span{color:var(--muted)}
+.meter .bar{height:8px;background:var(--rule);border-radius:4px;overflow:hidden;margin-top:5px}
+.meter .bar span{display:block;height:100%;background:var(--ink)}
+.meter.hot .bar span{background:var(--warn)} .meter.crit .bar span{background:var(--bad)}
+
+/* request feed */
+.feedhead{display:flex;justify-content:space-between;align-items:end;gap:12px;flex-wrap:wrap}
+input[type=search]{font:inherit;font-weight:400;font-size:.9rem;padding:7px 10px;border:1px solid var(--rule);border-radius:6px;background:var(--surface);color:var(--ink);min-width:260px}
+input[type=search]:focus-visible,button:focus-visible{outline:2px solid var(--llm);outline-offset:2px}
+.tablewrap{overflow-x:auto;border-top:1px solid var(--rule)}
+table{width:100%;border-collapse:collapse;font-size:.86rem}
+th{text-align:left;font-weight:600;color:var(--muted);padding:8px 10px;border-bottom:1px solid var(--rule);white-space:nowrap}
+td{padding:7px 10px;border-bottom:1px solid var(--rule);vertical-align:top;white-space:nowrap}
+td.num{text-align:right} th.num{text-align:right}
+td.preview{white-space:normal;min-width:220px;max-width:420px;color:var(--muted)}
+td.svc{font-weight:700;color:var(--c)}
+tr.ev{cursor:pointer} tr.ev:hover{background:var(--surface)}
+tr.err td.res{color:var(--bad);font-weight:600}
+tr.detail td{white-space:pre-wrap;font-size:.8rem;background:var(--surface);color:var(--ink)}
+.empty{padding:18px 0;color:var(--muted)}
+@media (max-width:900px){ .lane{grid-template-columns:1fr} .trace{height:auto;display:flex;flex-direction:column-reverse} .trace .now{position:static;text-align:left;margin-bottom:4px} }
+@media (prefers-reduced-motion:reduce){ *{transition:none!important} }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <div>
+      <h1>GPU model server</h1>
+      <div class="sub" id="host">Connecting to the VM…</div>
+    </div>
+    <div class="sub">Updated <span id="updated">never</span> &nbsp; <span id="conn">connecting</span></div>
+  </header>
+
+  <h2>Services</h2>
+  <div class="lanes" id="lanes"></div>
+
+  <h2>Machine</h2>
+  <div class="machine" id="machine"></div>
+
+  <h2 class="feedhead"><span>Requests</span>
+    <input type="search" id="filter" placeholder="Filter by call ID, model or text" aria-label="Filter requests"></h2>
+  <div class="tablewrap">
+    <table>
+      <thead><tr><th>Time</th><th>Service</th><th>Model</th><th>Call / turn</th><th class="num">Tokens in</th><th class="num">Tokens out</th>
+        <th class="num">First token</th><th class="num">Total</th><th>Result</th><th>Input</th></tr></thead>
+      <tbody id="feed"></tbody>
+    </table>
+  </div>
+  <div class="empty" id="feedEmpty">No requests yet. Requests appear here once the telemetry gateway is on (set TELEMETRY_GATEWAY=on).</div>
+</main>
+<script>
+const COLORS = {llm:'--llm', stt:'--stt', tts:'--tts', sahabat:'--sahabat'};
+const NAMES = {llm:'Language model', stt:'Speech to text', tts:'Text to speech', sahabat:'Sahabat'};
+const SHORT = {llm:'LLM', stt:'STT', tts:'TTS', sahabat:'Sahabat'};
+const UNIT = {stt:'tokens/s transcribed'};
+const css = v => getComputedStyle(document.documentElement).getPropertyValue(v).trim();
+const color = n => css(COLORS[n] || '--other');
+const fmt = (x, d=0) => (x === null || x === undefined) ? '–' : Number(x).toLocaleString(undefined,{maximumFractionDigits:d, minimumFractionDigits:d});
+const dur = s => s == null ? '–' : s < 60 ? `${s}s` : s < 3600 ? `${Math.floor(s/60)}m` : `${Math.floor(s/3600)}h ${Math.floor(s%3600/60)}m`;
+const el = (tag, attrs={}, ...kids) => { const e = document.createElement(tag);
+  for (const [k,v] of Object.entries(attrs)) { if (k==='text') e.textContent=v; else if (k==='style') e.style.cssText=v; else e.setAttribute(k,v); }
+  kids.forEach(k => e.append(k)); return e; };
+
+const lanes = {};
+function lane(s){
+  if (lanes[s.name]) return lanes[s.name];
+  const root = el('div',{class:'lane', style:`--c:var(${COLORS[s.name]||'--other'})`});
+  const left = el('div'), mid = el('div',{class:'trace'}), right = el('dl',{class:'stats'});
+  const name = el('div',{class:'name', text:NAMES[s.name] || s.name});
+  const st = el('div',{class:'state'}), model = el('div',{class:'model'});
+  left.append(name, st, model);
+  const canvas = el('canvas'); const now = el('div',{class:'now'}); const cap = el('div',{class:'cap',text:'Last 5 minutes'}); mid.append(canvas, now, cap);
+  root.append(left, mid, right); document.getElementById('lanes').append(root);
+  return lanes[s.name] = {root, st, model, canvas, now, right, cap};
+}
+function drawTrace(canvas, data, c){
+  const dpr = window.devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight;
+  if (canvas.width !== w*dpr) { canvas.width = w*dpr; canvas.height = h*dpr; }
+  const ctx = canvas.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,w,h);
+  const plotW = window.innerWidth > 900 ? w - 130 : w; if (plotW < 40 || !data.length) return;
+  const max = Math.max(50, ...data) * 1.1, step = plotW / 299;
+  ctx.strokeStyle = css('--rule'); ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(0,h-0.5); ctx.lineTo(plotW,h-0.5); ctx.stroke();
+  ctx.beginPath(); const off = 300 - data.length;
+  data.forEach((v,i) => { const x=(off+i)*step, y=h-2-(v/max)*(h-6); i?ctx.lineTo(x,y):ctx.moveTo(x,y); });
+  ctx.strokeStyle = c; ctx.lineWidth = 1.6; ctx.stroke();
+  ctx.lineTo((off+data.length-1)*step,h); ctx.lineTo(off*step,h); ctx.closePath(); ctx.globalAlpha=.12; ctx.fillStyle=c; ctx.fill(); ctx.globalAlpha=1;
+}
+function stat(dl, label, value){ dl.append(el('dt',{text:label}), el('dd',{text:value})); }
+
+function renderServices(services, hist){
+  for (const s of services){
+    const L = lane(s);
+    L.st.className = 'state ' + s.state; L.st.replaceChildren(el('i'), document.createTextNode(
+      s.state==='up' ? `Up ${dur(s.up_seconds)}` : s.state==='loading' ? 'Loading' : 'Down'));
+    L.model.textContent = s.model || (s.kind==='custom' ? 'speech server' : `port ${s.port}`);
+    const isV = s.kind === 'vllm';
+    drawTrace(L.canvas, isV ? (hist[`${s.name}_tps`]||[]) : [], color(s.name));
+    L.cap.style.display = isV ? '' : 'none'; L.canvas.style.display = isV ? '' : 'none';
+    L.now.replaceChildren(...(isV ? [el('b',{text:fmt(s.gen_tps)}), el('span',{text:UNIT[s.name] || 'tokens/s generated'})] : [el('span',{text: s.state==='up' ? 'No token metrics for this service' : ''})]));
+    L.right.replaceChildren();
+    if (isV){
+      stat(L.right,'Running / waiting', `${fmt(s.running)} / ${fmt(s.waiting)}`);
+      stat(L.right,'Prompt tokens/s', fmt(s.prompt_tps));
+      stat(L.right,'Avg first token (1 min)', s.ttft_ms_1m==null?'–':`${fmt(s.ttft_ms_1m)} ms`);
+      stat(L.right,'Avg request time (1 min)', s.latency_ms_1m==null?'–':`${fmt(s.latency_ms_1m)} ms`);
+      stat(L.right,'Requests done', fmt(s.totals?.requests));
+      const kv = (s.kv||0)*100; const dd = el('dd'); const bar = el('div',{class:'kvbar'}, el('span',{style:`width:${Math.min(100,Math.max(kv>0?1:0,kv))}%`}));
+      dd.append(document.createTextNode(`${fmt(kv,2)}%`), bar); L.right.append(el('dt',{text:'KV cache in use'}), dd);
+    } else stat(L.right,'Port', String(s.port));
+  }
+}
+function meter(label, value, pct, unit=''){
+  const cls = pct>=90?'meter crit':pct>=75?'meter hot':'meter';
+  return el('div',{class:cls}, el('div',{class:'lbl'}, document.createTextNode(label), el('span',{text:value})),
+            el('div',{class:'bar'}, el('span',{style:`width:${Math.min(100,pct||0)}%`})));
+}
+function renderMachine(gpu, host){
+  const m = document.getElementById('machine'); m.replaceChildren();
+  if (gpu.name){
+    m.append(meter('GPU memory', `${fmt(gpu.vram_used_gib,1)} / ${fmt(gpu.vram_total_gib,1)} GiB`, 100*gpu.vram_used_gib/gpu.vram_total_gib));
+    m.append(meter('GPU load', `${fmt(gpu.util)}%`, gpu.util));
+    m.append(meter('GPU power', `${fmt(gpu.power_w)} / ${fmt(gpu.power_limit_w)} W   ${fmt(gpu.temp_c)} °C`, 100*gpu.power_w/gpu.power_limit_w));
+  }
+  if (host.cpu!=null) m.append(meter('CPU', `${fmt(host.cpu)}% of ${host.vcpus} vCPU`, host.cpu));
+  if (host.ram_total_gib) m.append(meter('RAM', `${fmt(host.ram_used_gib,1)} / ${fmt(host.ram_total_gib,1)} GiB`, 100*host.ram_used_gib/host.ram_total_gib));
+  if (host.disk_total_gib) m.append(meter(`Disk ${host.disk_path}`, `${fmt(host.disk_used_gib,1)} / ${fmt(host.disk_total_gib,1)} GiB`, 100*host.disk_used_gib/host.disk_total_gib));
+}
+
+const feed = [];
+function result(e){
+  if (e.status && e.status >= 400) return `Error ${e.status}`;
+  if (e.tool_calls && e.tool_calls.length) return `Tool: ${e.tool_calls.join(', ')}`;
+  if (e.service==='stt') return e.audio_seconds!=null ? `${fmt(e.audio_seconds,1)} s audio` : 'OK';
+  if (e.service==='tts') return e.audio_seconds!=null ? `${fmt(e.audio_seconds,1)} s speech` : 'OK';
+  return e.finish_reason || 'OK';
+}
+function renderFeed(){
+  const q = document.getElementById('filter').value.trim().toLowerCase();
+  const body = document.getElementById('feed'); body.replaceChildren();
+  const rows = feed.filter(e => !q || JSON.stringify(e).toLowerCase().includes(q)).slice(-200).reverse();
+  document.getElementById('feedEmpty').style.display = feed.length ? 'none' : 'block';
+  for (const e of rows){
+    const t = e.ts ? new Date(e.ts).toLocaleTimeString() : '';
+    const tok = e.tokens || {};
+    const tr = el('tr',{class:'ev' + ((e.status>=400)?' err':''), tabindex:'0', style:`--c:var(${COLORS[e.service]||'--other'})`});
+    const cells = [ el('td',{text:t}), el('td',{class:'svc',text:SHORT[e.service]||e.service||''}), el('td',{text:e.model||''}),
+      el('td',{text:`${e.call_id||'–'} / ${e.turn_id||'–'}`}),
+      el('td',{class:'num',text: e.service==='tts' ? fmt(e.input_chars)+' ch' : fmt(tok.prompt)}),
+      el('td',{class:'num',text: fmt(tok.completion)}),
+      el('td',{class:'num',text: e.ttft_ms!=null?`${fmt(e.ttft_ms)} ms`:'–'}),
+      el('td',{class:'num',text: e.latency_ms!=null?`${fmt(e.latency_ms)} ms`:'–'}),
+      el('td',{class:'res',text:result(e)}), el('td',{class:'preview',text:(e.input||e.output||'').slice(0,160)}) ];
+    tr.append(...cells); body.append(tr);
+    const toggle = () => { const n = tr.nextSibling;
+      if (n && n.classList && n.classList.contains('detail')) { n.remove(); return; }
+      tr.after(el('tr',{class:'detail'}, el('td',{colspan:'10',text:JSON.stringify(e,null,2)}))); };
+    tr.addEventListener('click', toggle); tr.addEventListener('keydown', ev => { if (ev.key==='Enter') toggle(); });
+  }
+}
+document.getElementById('filter').addEventListener('input', renderFeed);
+
+let lastTs = 0;
+function connect(){
+  const conn = document.getElementById('conn');
+  const es = new EventSource('api/stream');
+  es.onmessage = m => {
+    const d = JSON.parse(m.data); lastTs = d.ts;
+    conn.textContent = 'Live'; conn.className = 'live';
+    document.getElementById('host').textContent = d.gpu.name ? `${d.gpu.name}, ${d.host.vcpus} vCPU` : 'GPU details unavailable';
+    document.getElementById('updated').textContent = new Date(d.ts*1000).toLocaleTimeString();
+    renderServices(d.services, d.hist); renderMachine(d.gpu, d.host);
+    if (d.events && d.events.length){ feed.push(...d.events); if (feed.length>500) feed.splice(0, feed.length-500); renderFeed(); }
+  };
+  es.onerror = () => { conn.textContent = 'Connection lost, retrying'; conn.className = 'lost'; };
+}
+connect();
+</script>
+</body>
+</html>
