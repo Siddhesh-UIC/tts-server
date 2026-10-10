@@ -4,10 +4,17 @@ Runs on its own port (default 3000), reads only public signals (/health, vLLM /m
 nvidia-smi, /proc), so it cannot disturb the model servers. Request events arrive on
 POST /ingest from the telemetry gateway (localhost only).
 
+History (GPU, host and per-service metrics every DASH_SAMPLE_SEC, plus every request event)
+is kept in SQLite so charts and requests survive restarts.
+
 Env: DASH_PORT [3000]  DASH_USER [admin]  DASH_PASSWORD [falls back to VLLM_API_KEY]
      DASH_SERVICES [llm:8000,stt:8001,tts:8002,sahabat:8003]  DASH_DISK [/workspace]
+     DASH_DB [/workspace/telemetry/dashboard.db]  DASH_SAMPLE_SEC [5]
+     DASH_KEEP_METRICS_DAYS [30]  DASH_KEEP_EVENTS_DAYS [30]
 """
-import asyncio, base64, collections, contextlib, hmac, json, os, shutil, time
+import asyncio, base64, collections, contextlib, csv, hmac, io, json, os, shutil, time
+
+from store import Store
 
 import httpx, uvicorn
 from starlette.applications import Starlette
@@ -22,6 +29,9 @@ PASSWORD = E("DASH_PASSWORD") or E("VLLM_API_KEY") or ""
 SERVICES = [(s, int(p)) for s, p in (x.split(":") for x in E("DASH_SERVICES", "llm:8000,stt:8001,tts:8002,sahabat:8003").split(","))]
 DISK = E("DASH_DISK", "/workspace")
 HIST = 300  # 5 minutes at 1 s
+SAMPLE_SEC = max(1, int(E("DASH_SAMPLE_SEC", "5")))
+STORE = Store(E("DASH_DB", "/workspace/telemetry/dashboard.db"),
+              sample_days=float(E("DASH_KEEP_METRICS_DAYS", "30")), event_days=float(E("DASH_KEEP_EVENTS_DAYS", "30")))
 
 client = httpx.AsyncClient(timeout=1.5)
 state = {"ts": 0, "gpu": {}, "host": {}, "services": {}, "hist": {}}
@@ -78,7 +88,7 @@ async def poll_service(name, port, now):
         a, b = hist[max(0, len(hist) - 1 - back)], hist[-1]
         if None in (a.get(ks), b.get(ks), a.get(kc), b.get(kc)) or b[kc] <= a[kc]: return None
         return (b[ks] - a[ks]) / (b[kc] - a[kc])
-    s["gen_tps"] = round(rate("gen", 1)); s["prompt_tps"] = round(rate("prompt", 1))
+    s["gen_tps"] = round(rate("gen", 1)); s["prompt_tps"] = round(rate("prompt", 1)); s["req_rate"] = rate("req", 1) * 60
     s["req_per_min"] = round(rate("req", 60) * 60, 1)
     s["ttft_ms_1m"] = None if (x := avg("ttft_s", "ttft_c", 60)) is None else round(x * 1000)
     s["latency_ms_1m"] = None if (x := avg("e2e_s", "e2e_c", 60)) is None else round(x * 1000)
@@ -116,8 +126,32 @@ def poll_host(now):
 def push_hist(key, val):
     state["hist"].setdefault(key, collections.deque(maxlen=HIST)).append(val)
 
+def sample_row(results):
+    """One tick's numbers, keyed by SQLite column name."""
+    gp, h = state["gpu"], state["host"]
+    row = {"gpu_vram_gib": gp.get("vram_used_gib"), "gpu_util_pct": gp.get("util"), "gpu_power_w": gp.get("power_w"),
+           "gpu_temp_c": gp.get("temp_c"), "cpu_pct": h.get("cpu"), "ram_gib": h.get("ram_used_gib")}
+    for s in results:
+        n = s["name"]
+        row[f"{n}_up"] = 1.0 if s["state"] == "up" else 0.0
+        if s.get("kind") == "vllm":
+            row[f"{n}_gen_tps"] = s.get("gen_tps"); row[f"{n}_prompt_tps"] = s.get("prompt_tps")
+            row[f"{n}_req_per_min"] = s.get("req_rate"); row[f"{n}_running"] = s.get("running")
+            row[f"{n}_waiting"] = s.get("waiting"); kv = s.get("kv")
+            row[f"{n}_kv_pct"] = None if kv is None else kv * 100
+    return row
+
+def average(rows):
+    out = {}
+    for k in {k for r in rows for k in r}:
+        vals = [r[k] for r in rows if r.get(k) is not None]
+        if not vals: out[k] = None
+        elif k.endswith(("_running", "_waiting")): out[k] = max(vals)
+        else: out[k] = sum(vals) / len(vals)
+    return out
+
 async def collector():
-    tick = 0
+    tick = 0; window = []; window_start = time.time()
     while True:
         now = time.time()
         results = await asyncio.gather(*(poll_service(n, p, now) for n, p in SERVICES))
@@ -126,6 +160,11 @@ async def collector():
         state["host"] = poll_host(now); state["ts"] = now
         push_hist("gpu_util", state["gpu"].get("util", 0))
         for s in results: push_hist(f"{s['name']}_tps", s.get("gen_tps", 0) or 0)
+        window.append(sample_row(results))
+        if now - window_start >= SAMPLE_SEC:
+            row = average(window); window = []; window_start = now
+            try: await asyncio.to_thread(STORE.add_sample, now, row)
+            except Exception as e: print(f"[dashboard] could not save metrics: {e}", flush=True)
         tick += 1
         await asyncio.sleep(max(0.2, 1 - (time.time() - now)))
 
@@ -153,8 +192,44 @@ async def ingest(req: Request):
     if req.client and req.client.host not in ("127.0.0.1", "::1"): return Response(status_code=403)
     try: ev = await req.json()
     except Exception: return Response(status_code=400)
-    event_seq += 1; ev["_seq"] = event_seq; events.append(ev)
+    try: event_seq = await asyncio.to_thread(STORE.add_event, ev)
+    except Exception as e:
+        print(f"[dashboard] could not save event: {e}", flush=True); event_seq += 1
+    ev["_seq"] = event_seq; events.append(ev)
     return Response(status_code=204)
+
+def time_range(req):
+    now = time.time()
+    try:
+        until = float(req.query_params.get("until") or now)
+        since = float(req.query_params.get("since") or until - float(req.query_params.get("range", "3600")))
+    except ValueError: since, until = now - 3600, now
+    return max(0, since), until
+
+async def api_history(req):
+    if not authorized(req): return need_auth()
+    since, until = time_range(req)
+    data = await asyncio.to_thread(STORE.history, since, until)
+    data.update(since=since, until=until, db_mb=STORE.size_mb())
+    return JSONResponse(data)
+
+async def api_history_csv(req):
+    if not authorized(req): return need_auth()
+    since, until = time_range(req)
+    data = await asyncio.to_thread(STORE.history, since, until, 5000)
+    cols = sorted(data["series"]); buf = io.StringIO(); w = csv.writer(buf)
+    w.writerow(["time_utc"] + cols)
+    for i, t in enumerate(data["t"]):
+        w.writerow([time.strftime("%Y-%m-%d %H:%M:%S", time.gmtime(t))] + ["" if data["series"][c][i] is None else data["series"][c][i] for c in cols])
+    name = time.strftime("gpu-history-%Y%m%d-%H%M.csv", time.gmtime(until))
+    return Response(buf.getvalue(), media_type="text/csv", headers={"Content-Disposition": f'attachment; filename="{name}"'})
+
+async def api_events(req):
+    if not authorized(req): return need_auth()
+    qp = req.query_params
+    try: rows = await asyncio.to_thread(STORE.events, qp.get("before"), qp.get("limit", "200"), qp.get("q") or None)
+    except ValueError: return Response(status_code=400)
+    return JSONResponse({"events": rows})
 
 async def api_snapshot(req):
     if not authorized(req): return need_auth()
@@ -163,14 +238,13 @@ async def api_snapshot(req):
 async def api_stream(req: Request):
     if not authorized(req): return need_auth()
     async def gen():
-        last = 0
-        first = True
+        last = event_seq
         while True:
             if await req.is_disconnected(): break
             snap = snapshot()
-            new = [e for e in events if e["_seq"] > last][-(200 if first else 100):]
+            new = [e for e in events if e["_seq"] > last][-100:]
             if new: last = new[-1]["_seq"]
-            snap["events"] = new; first = False
+            snap["events"] = new
             yield f"data: {json.dumps(snap, ensure_ascii=False)}\n\n"
             await asyncio.sleep(1)
     return StreamingResponse(gen(), media_type="text/event-stream", headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"})
@@ -181,14 +255,19 @@ async def page(req):
 
 @contextlib.asynccontextmanager
 async def lifespan(app):
+    global event_seq
+    event_seq = STORE.last_event_id()
+    events.extend(STORE.events(limit=200))
     task = asyncio.create_task(collector()); yield; task.cancel()
 
 app = Starlette(routes=[Route("/", page), Route("/health", health), Route("/ingest", ingest, methods=["POST"]),
-                        Route("/api/snapshot", api_snapshot), Route("/api/stream", api_stream)], lifespan=lifespan)
+                        Route("/api/snapshot", api_snapshot), Route("/api/stream", api_stream),
+                        Route("/api/history", api_history), Route("/api/history.csv", api_history_csv),
+                        Route("/api/events", api_events)], lifespan=lifespan)
 
 HTML = open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.html"), encoding="utf-8").read()
 
 if __name__ == "__main__":
     if not PASSWORD: print("[dashboard] WARNING: no DASH_PASSWORD or VLLM_API_KEY set - dashboard is open to anyone", flush=True)
-    print(f"[dashboard] serving on :{PORT}, services {SERVICES}", flush=True)
+    print(f"[dashboard] serving on :{PORT}, services {SERVICES}, history in {STORE.path} ({STORE.size_mb()} MB)", flush=True)
     uvicorn.run(app, host="0.0.0.0", port=PORT, log_level="warning")

@@ -9,13 +9,13 @@
 <style>
 :root{
   --bg:#EEF1EF; --surface:#F8FAF8; --ink:#1B2430; --muted:#5F6B76; --rule:#C9D1CC;
-  --llm:#0F6E8C; --stt:#A8641A; --tts:#7A4FB0; --sahabat:#2E7D52; --other:#4A5560;
+  --llm:#2a78d6; --stt:#eb6834; --sahabat:#1baf7a; --tts:#eda100; --other:#4A5560;
   --ok:#2E7D52; --warn:#B7791F; --bad:#C62F2F;
   --font:"Instrument Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
 }
 @media (prefers-color-scheme: dark){
   :root{ --bg:#141A1F; --surface:#1B232A; --ink:#E6ECEF; --muted:#9AA7B1; --rule:#2E3A43;
-         --llm:#4FB3D1; --stt:#E0A050; --tts:#B08BE0; --sahabat:#5FC08A; --ok:#5FC08A; --warn:#E0A050; --bad:#F06A6A; }
+         --llm:#3987e5; --stt:#d95926; --sahabat:#199e70; --tts:#c98500; --other:#9AA7B1; --ok:#5FC08A; --warn:#E0A050; --bad:#F06A6A; }
 }
 *{box-sizing:border-box}
 html,body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--font);font-variant-numeric:tabular-nums;font-size:15px;line-height:1.45}
@@ -30,7 +30,7 @@ h2{font-size:1.05rem;font-weight:600;margin:28px 0 8px}
 /* service lanes: the one bold element */
 .lanes{border-top:1px solid var(--rule)}
 .lane{display:grid;grid-template-columns:230px 1fr 260px;gap:18px;align-items:center;padding:14px 0 22px;border-bottom:1px solid var(--rule);border-left:6px solid var(--c);padding-left:14px}
-.lane .name{font-size:1.25rem;font-weight:700;color:var(--c);text-transform:none}
+.lane .name{font-size:1.25rem;font-weight:700;color:var(--ink)}
 .lane .model{color:var(--muted);font-size:.85rem;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .state{display:inline-flex;align-items:center;gap:6px;font-weight:600;font-size:.9rem;margin-top:2px}
 .state i{width:9px;height:9px;border-radius:50%;background:var(--muted);display:inline-block}
@@ -40,7 +40,7 @@ h2{font-size:1.05rem;font-weight:600;margin:28px 0 8px}
 .trace canvas{width:100%;height:64px;display:block}
 .trace .now{position:absolute;right:0;top:0;text-align:right;line-height:1.1}
 .trace .cap{position:absolute;left:0;bottom:-16px;font-size:.72rem;color:var(--muted)}
-.trace .now b{font-size:1.6rem;font-weight:700;color:var(--c)} .trace .now span{display:block;color:var(--muted);font-size:.78rem}
+.trace .now b{font-size:1.6rem;font-weight:700;color:var(--ink)} .trace .now span{display:block;color:var(--muted);font-size:.78rem}
 .stats{display:grid;grid-template-columns:auto 1fr;gap:2px 12px;font-size:.88rem}
 .stats dt{color:var(--muted)} .stats dd{margin:0;text-align:right;font-weight:500}
 .kvbar{height:6px;background:var(--rule);border-radius:3px;overflow:hidden;margin-top:4px}
@@ -64,11 +64,36 @@ th{text-align:left;font-weight:600;color:var(--muted);padding:8px 10px;border-bo
 td{padding:7px 10px;border-bottom:1px solid var(--rule);vertical-align:top;white-space:nowrap}
 td.num{text-align:right} th.num{text-align:right}
 td.preview{white-space:normal;min-width:220px;max-width:420px;color:var(--muted)}
-td.svc{font-weight:700;color:var(--c)}
+td.svc{font-weight:600}
+td.svc::before,.key{content:"";display:inline-block;width:14px;height:2px;border-radius:1px;background:var(--c);vertical-align:middle;margin-right:7px}
 tr.ev{cursor:pointer} tr.ev:hover{background:var(--surface)}
 tr.err td.res{color:var(--bad);font-weight:600}
 tr.detail td{white-space:pre-wrap;font-size:.8rem;background:var(--surface);color:var(--ink)}
 .empty{padding:18px 0;color:var(--muted)}
+/* history */
+.histbar{display:flex;align-items:center;gap:16px;flex-wrap:wrap;margin-bottom:12px}
+.ranges{display:inline-flex;border:1px solid var(--rule);border-radius:7px;overflow:hidden;background:var(--surface)}
+.ranges button{font:inherit;font-size:.86rem;padding:6px 12px;border:0;border-right:1px solid var(--rule);background:transparent;color:var(--ink);cursor:pointer}
+.ranges button:last-child{border-right:0}
+.ranges button:hover{background:var(--bg)}
+.ranges button[aria-pressed="true"]{background:var(--ink);color:var(--surface);font-weight:600}
+.histbar a{color:var(--ink);font-size:.86rem}
+.charts{display:grid;grid-template-columns:repeat(auto-fill,minmax(440px,1fr));gap:22px 28px;transition:opacity .2s}
+.charts.loading{opacity:.55}
+.chart{margin:0;min-width:0}
+.chart figcaption{display:flex;justify-content:space-between;align-items:baseline;gap:10px;font-size:.92rem;font-weight:600;margin-bottom:2px}
+.chart figcaption span{color:var(--muted);font-weight:400;font-size:.82rem}
+.legend{display:flex;gap:14px;flex-wrap:wrap;font-size:.8rem;color:var(--ink);margin:2px 0 4px}
+.plot{position:relative}
+.plot canvas{width:100%;height:150px;display:block;outline:none;cursor:crosshair}
+.plot canvas:focus-visible{outline:2px solid var(--llm);outline-offset:2px}
+.tip{position:absolute;pointer-events:none;background:var(--surface);border:1px solid var(--rule);border-radius:6px;padding:6px 9px;font-size:.8rem;box-shadow:0 2px 8px rgba(0,0,0,.08);white-space:nowrap;z-index:2;display:none}
+.tip .t{color:var(--muted);margin-bottom:2px}
+.tip .r{display:flex;align-items:center;gap:6px}
+.tip .r b{font-weight:600}
+.tip .r small{color:var(--muted);font-size:.78rem}
+button.more{font:inherit;font-size:.86rem;margin-top:10px;padding:6px 12px;border:1px solid var(--rule);border-radius:6px;background:var(--surface);color:var(--ink);cursor:pointer}
+@media (max-width:520px){ .charts{grid-template-columns:1fr} }
 @media (max-width:900px){ .lane{grid-template-columns:1fr} .trace{height:auto;display:flex;flex-direction:column-reverse} .trace .now{position:static;text-align:left;margin-bottom:4px} }
 @media (prefers-reduced-motion:reduce){ *{transition:none!important} }
 </style>
@@ -89,6 +114,20 @@ tr.detail td{white-space:pre-wrap;font-size:.8rem;background:var(--surface);colo
   <h2>Machine</h2>
   <div class="machine" id="machine"></div>
 
+  <h2>History</h2>
+  <div class="histbar">
+    <div class="ranges" role="group" aria-label="Time range" id="ranges">
+      <button type="button" data-r="3600" aria-pressed="true">1 hour</button>
+      <button type="button" data-r="21600" aria-pressed="false">6 hours</button>
+      <button type="button" data-r="86400" aria-pressed="false">24 hours</button>
+      <button type="button" data-r="604800" aria-pressed="false">7 days</button>
+      <button type="button" data-r="2592000" aria-pressed="false">30 days</button>
+    </div>
+    <a id="csv" href="api/history.csv?range=3600">Download as CSV</a>
+    <span class="sub" id="histNote"></span>
+  </div>
+  <div class="charts" id="charts"></div>
+
   <h2 class="feedhead"><span>Requests</span>
     <input type="search" id="filter" placeholder="Filter by call ID, model or text" aria-label="Filter requests"></h2>
   <div class="tablewrap">
@@ -98,7 +137,8 @@ tr.detail td{white-space:pre-wrap;font-size:.8rem;background:var(--surface);colo
       <tbody id="feed"></tbody>
     </table>
   </div>
-  <div class="empty" id="feedEmpty">No requests yet. Requests appear here once the telemetry gateway is on (set TELEMETRY_GATEWAY=on).</div>
+  <div class="empty" id="feedEmpty">No requests recorded yet. Requests appear here when traffic goes through the telemetry gateway.</div>
+  <button type="button" class="more" id="more" hidden>Load older requests</button>
 </main>
 <script>
 const COLORS = {llm:'--llm', stt:'--stt', tts:'--tts', sahabat:'--sahabat'};
@@ -178,7 +218,7 @@ function renderMachine(gpu, host){
   if (host.disk_total_gib) m.append(meter(`Disk ${host.disk_path}`, `${fmt(host.disk_used_gib,1)} / ${fmt(host.disk_total_gib,1)} GiB`, 100*host.disk_used_gib/host.disk_total_gib));
 }
 
-const feed = [];
+let feed = [], feedQuery = '', feedHasMore = false;
 function result(e){
   if (e.status && e.status >= 400) return `Error ${e.status}`;
   if (e.tool_calls && e.tool_calls.length) return `Tool: ${e.tool_calls.join(', ')}`;
@@ -187,12 +227,17 @@ function result(e){
   return e.finish_reason || 'OK';
 }
 function renderFeed(){
-  const q = document.getElementById('filter').value.trim().toLowerCase();
   const body = document.getElementById('feed'); body.replaceChildren();
-  const rows = feed.filter(e => !q || JSON.stringify(e).toLowerCase().includes(q)).slice(-200).reverse();
-  document.getElementById('feedEmpty').style.display = feed.length ? 'none' : 'block';
+  const rows = feed.slice(-1000).reverse();
+  const empty = document.getElementById('feedEmpty');
+  empty.style.display = feed.length ? 'none' : 'block';
+  if (!feed.length && feedQuery) empty.textContent = `No requests match “${feedQuery}”.`;
+  else if (!feed.length) empty.textContent = 'No requests recorded yet. Requests appear here when traffic goes through the telemetry gateway.';
+  document.getElementById('more').hidden = !feedHasMore;
+  const today = new Date().toDateString();
   for (const e of rows){
-    const t = e.ts ? new Date(e.ts).toLocaleTimeString() : '';
+    const d = e.ts ? new Date(e.ts) : null;
+    const t = !d ? '' : d.toDateString() === today ? d.toLocaleTimeString() : d.toLocaleString(undefined,{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit',second:'2-digit'});
     const tok = e.tokens || {};
     const tr = el('tr',{class:'ev' + ((e.status>=400)?' err':''), tabindex:'0', style:`--c:var(${COLORS[e.service]||'--other'})`});
     const cells = [ el('td',{text:t}), el('td',{class:'svc',text:SHORT[e.service]||e.service||''}), el('td',{text:e.model||''}),
@@ -209,7 +254,23 @@ function renderFeed(){
     tr.addEventListener('click', toggle); tr.addEventListener('keydown', ev => { if (ev.key==='Enter') toggle(); });
   }
 }
-document.getElementById('filter').addEventListener('input', renderFeed);
+async function loadEvents({older=false}={}){
+  const p = new URLSearchParams({limit:'200'});
+  if (feedQuery) p.set('q', feedQuery);
+  if (older && feed.length) p.set('before', String(feed[0]._seq));
+  try {
+    const r = await fetch('api/events?' + p); if (!r.ok) return;
+    const got = (await r.json()).events || [];
+    feed = older ? got.concat(feed) : got; feedHasMore = got.length === 200; renderFeed();
+  } catch (e) {}
+}
+let filterTimer;
+document.getElementById('filter').addEventListener('input', ev => {
+  clearTimeout(filterTimer);
+  filterTimer = setTimeout(() => { feedQuery = ev.target.value.trim(); loadEvents(); }, 350);
+});
+document.getElementById('more').addEventListener('click', () => loadEvents({older:true}));
+const matches = e => !feedQuery || JSON.stringify(e).toLowerCase().includes(feedQuery.toLowerCase());
 
 let lastTs = 0;
 function connect(){
@@ -221,11 +282,185 @@ function connect(){
     document.getElementById('host').textContent = d.gpu.name ? `${d.gpu.name}, ${d.host.vcpus} vCPU` : 'GPU details unavailable';
     document.getElementById('updated').textContent = new Date(d.ts*1000).toLocaleTimeString();
     renderServices(d.services, d.hist); renderMachine(d.gpu, d.host);
-    if (d.events && d.events.length){ feed.push(...d.events); if (feed.length>500) feed.splice(0, feed.length-500); renderFeed(); }
+    const fresh = (d.events || []).filter(e => matches(e) && !feed.some(f => f._seq === e._seq));
+    if (fresh.length){ feed.push(...fresh); if (feed.length > 2000) feed.splice(0, feed.length - 2000); renderFeed(); }
+    lastGpu = d.gpu; lastHost = d.host;
   };
   es.onerror = () => { conn.textContent = 'Connection lost, retrying'; conn.className = 'lost'; };
 }
-connect();
+let lastGpu = {}, lastHost = {};
+
+/* ---------------- history charts (one measure per chart, one shared time axis) ---------------- */
+const MACHINE = '--ink';
+const CHARTS = [
+  {title:'GPU memory used', unit:'GiB', cols:[['gpu_vram_gib', MACHINE]], max:() => lastGpu.vram_total_gib, dec:1},
+  {title:'GPU load', unit:'%', cols:[['gpu_util_pct', MACHINE]], max:() => 100},
+  {title:'GPU power', unit:'W', cols:[['gpu_power_w', MACHINE]]},
+  {title:'CPU', unit:'%', cols:[['cpu_pct', MACHINE]], max:() => 100, dec:1},
+  {title:'RAM used', unit:'GiB', cols:[['ram_gib', MACHINE]], dec:1},
+  {title:'Tokens generated per second', unit:'tokens/s', svc:['llm','sahabat'], key:'gen_tps'},
+  {title:'Requests per minute', unit:'requests/min', svc:['llm','stt','sahabat'], key:'req_per_min', dec:1},
+  {title:'KV cache in use', unit:'%', svc:['llm','sahabat'], key:'kv_pct', dec:2},
+  {title:'Requests waiting', unit:'peak per interval', svc:['llm','stt','sahabat'], key:'waiting'},
+];
+let hist = null, histRange = 3600, hoverT = null, hoverChart = null;
+
+function niceMax(v){
+  if (!(v > 0)) return 1;
+  const p = Math.pow(10, Math.floor(Math.log10(v))), n = v / p;
+  return (n <= 1 ? 1 : n <= 2 ? 2 : n <= 2.5 ? 2.5 : n <= 5 ? 5 : 10) * p;
+}
+function timeLabel(t, range){
+  const d = new Date(t * 1000);
+  if (range <= 86400) return d.toLocaleTimeString(undefined, {hour:'2-digit', minute:'2-digit'});
+  return d.toLocaleDateString(undefined, {day:'numeric', month:'short'}) + (range <= 604800 ? ' ' + d.toLocaleTimeString(undefined,{hour:'2-digit'}) : '');
+}
+function seriesFor(def){
+  if (!hist) return [];
+  const list = def.cols ? def.cols.map(([c, v]) => ({col:c, name:def.title, cssVar:v}))
+                        : def.svc.map(n => ({col:`${n}_${def.key}`, name:SHORT[n], cssVar:COLORS[n]}));
+  return list.filter(s => hist.series[s.col]).map(s => ({...s, data:hist.series[s.col], color:css(s.cssVar)}));
+}
+
+const chartEls = [];
+function buildCharts(){
+  const box = document.getElementById('charts');
+  for (const def of CHARTS){
+    const fig = el('figure', {class:'chart'});
+    const cap = el('figcaption', {}, document.createTextNode(def.title), el('span', {text:def.unit}));
+    const legend = el('div', {class:'legend'});
+    const canvas = el('canvas', {tabindex:'0', role:'img', 'aria-label':`${def.title} chart`});
+    const tip = el('div', {class:'tip'});
+    fig.append(cap, legend, el('div', {class:'plot'}, canvas, tip)); box.append(fig);
+    const c = {def, fig, legend, canvas, tip};
+    canvas.addEventListener('pointermove', ev => pointAt(c, ev.offsetX));
+    canvas.addEventListener('pointerleave', () => { hoverT = null; hoverChart = null; drawAll(); });
+    canvas.addEventListener('focus', () => { if (hist && hist.t.length){ hoverT = hist.t[hist.t.length-1]; hoverChart = c; drawAll(); } });
+    canvas.addEventListener('blur', () => { if (hoverChart === c){ hoverT = null; hoverChart = null; drawAll(); } });
+    canvas.addEventListener('keydown', ev => {
+      if (!hist || !hist.t.length) return;
+      let i = nearestIndex(hoverT ?? hist.t[hist.t.length-1]);
+      if (ev.key === 'ArrowLeft') i = Math.max(0, i-1); else if (ev.key === 'ArrowRight') i = Math.min(hist.t.length-1, i+1);
+      else if (ev.key === 'Escape'){ hoverT = null; hoverChart = null; drawAll(); return; } else return;
+      ev.preventDefault(); hoverT = hist.t[i]; hoverChart = c; drawAll();
+    });
+    chartEls.push(c);
+  }
+}
+function nearestIndex(t){
+  let best = 0, bd = Infinity;
+  hist.t.forEach((x, i) => { const d = Math.abs(x - t); if (d < bd){ bd = d; best = i; } });
+  return best;
+}
+const PAD = {l:46, t:8, b:22};
+function geom(c, nSeries){
+  const w = c.canvas.clientWidth, h = c.canvas.clientHeight;
+  return {w, h, l:PAD.l, r: w - (nSeries > 1 ? 70 : 14), t:PAD.t, b: h - PAD.b};
+}
+function pointAt(c, x){
+  if (!hist || !hist.t.length) return;
+  const g = geom(c, seriesFor(c.def).length);
+  const frac = Math.min(1, Math.max(0, (x - g.l) / (g.r - g.l)));
+  hoverT = hist.t[nearestIndex(hist.since + frac * (hist.until - hist.since))]; hoverChart = c; drawAll();
+}
+function drawChart(c){
+  const S = seriesFor(c.def), cv = c.canvas, dpr = window.devicePixelRatio || 1;
+  const g = geom(c, S.length);
+  if (cv.width !== Math.round(g.w*dpr) || cv.height !== Math.round(g.h*dpr)){ cv.width = Math.round(g.w*dpr); cv.height = Math.round(g.h*dpr); }
+  const ctx = cv.getContext('2d'); ctx.setTransform(dpr,0,0,dpr,0,0); ctx.clearRect(0,0,g.w,g.h);
+  ctx.font = '11px ' + css('--font'); const muted = css('--muted'), rule = css('--rule'), ink = css('--ink');
+  // legend: always for 2+ series, line keys
+  c.legend.replaceChildren(...(S.length > 1 ? S.map(s => el('span', {}, el('i', {class:'key', style:`--c:${s.color}`}), document.createTextNode(s.name))) : []));
+  c.legend.style.display = S.length > 1 ? '' : 'none';
+  if (!hist || !S.length || !hist.t.length){
+    ctx.fillStyle = muted; ctx.textAlign = 'center';
+    ctx.fillText(hist ? 'No data recorded for this range yet' : 'Loading…', g.w/2, g.h/2); c.tip.style.display = 'none'; return;
+  }
+  const dataMax = Math.max(0, ...S.flatMap(s => s.data.filter(v => v != null)));
+  const fixed = c.def.max && c.def.max();
+  const yMax = fixed ? Math.max(fixed, dataMax) : 4 * niceMax(dataMax * 1.1 / 4);   // gridlines land on round numbers
+  const X = t => g.l + (t - hist.since) / (hist.until - hist.since) * (g.r - g.l);
+  const Y = v => g.b - (v / yMax) * (g.b - g.t);
+  // grid + y labels (solid hairlines, recessive)
+  ctx.textAlign = 'right'; ctx.textBaseline = 'middle';
+  for (let k = 0; k <= 4; k++){
+    const v = yMax * k / 4, y = Math.round(Y(v)) + .5;
+    ctx.strokeStyle = rule; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(g.l, y); ctx.lineTo(g.r, y); ctx.stroke();
+    ctx.fillStyle = muted; ctx.fillText(fmt(v, v % 1 === 0 ? 0 : (v * 10) % 1 === 0 ? 1 : 2), g.l - 6, y);
+  }
+  // x labels
+  ctx.textBaseline = 'top';
+  const nx = g.w < 480 ? 2 : 4;
+  for (let k = 0; k <= nx; k++){
+    const t = hist.since + (hist.until - hist.since) * k / nx;
+    ctx.textAlign = k === 0 ? 'left' : k === nx ? 'right' : 'center';
+    ctx.fillText(timeLabel(t, histRange), X(t), g.b + 6);
+  }
+  // lines: 2px, break across missing data
+  const gapLimit = hist.bucket * 2.5, ends = [];
+  for (const s of S){
+    ctx.strokeStyle = s.color; ctx.lineWidth = 2; ctx.lineJoin = 'round'; ctx.lineCap = 'round'; ctx.beginPath();
+    let pen = false, prevT = null, last = null;
+    s.data.forEach((v, i) => {
+      const t = hist.t[i];
+      if (v == null || (prevT != null && t - prevT > gapLimit)) pen = false;
+      if (v != null){ const x = X(t), y = Y(v); pen ? ctx.lineTo(x, y) : ctx.moveTo(x, y); pen = true; last = {x, y, v}; }
+      prevT = v == null ? prevT : t;
+    });
+    ctx.stroke();
+    if (last && S.length > 1) ends.push({s, y:last.y});
+  }
+  // direct labels at the right edge, nudged apart so they never overlap
+  ends.sort((a, b) => a.y - b.y);
+  for (let i = 1; i < ends.length; i++) if (ends[i].y - ends[i-1].y < 13) ends[i].y = ends[i-1].y + 13;
+  ctx.textAlign = 'left'; ctx.textBaseline = 'middle';
+  for (const e of ends){
+    ctx.strokeStyle = e.s.color; ctx.lineWidth = 2; ctx.beginPath(); ctx.moveTo(g.r + 6, e.y); ctx.lineTo(g.r + 14, e.y); ctx.stroke();
+    ctx.fillStyle = ink; ctx.fillText(e.s.name, g.r + 18, e.y);
+  }
+  // crosshair + tooltip (every series at that time)
+  if (hoverT == null){ c.tip.style.display = 'none'; return; }
+  const i = nearestIndex(hoverT), x = Math.round(X(hist.t[i])) + .5;
+  ctx.strokeStyle = muted; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(x, g.t); ctx.lineTo(x, g.b); ctx.stroke();
+  for (const s of S){
+    const v = s.data[i]; if (v == null) continue;
+    ctx.fillStyle = css('--surface'); ctx.beginPath(); ctx.arc(x, Y(v), 5, 0, 7); ctx.fill();
+    ctx.fillStyle = s.color; ctx.beginPath(); ctx.arc(x, Y(v), 3.5, 0, 7); ctx.fill();
+  }
+  if (hoverChart !== c){ c.tip.style.display = 'none'; return; }
+  const dec = c.def.dec ?? 0;
+  c.tip.replaceChildren(el('div', {class:'t', text:new Date(hist.t[i]*1000).toLocaleString(undefined,{day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'})}),
+    ...S.map(s => el('div', {class:'r'}, el('i', {class:'key', style:`--c:${s.color}`}),
+      el('b', {text: s.data[i] == null ? 'no data' : `${fmt(s.data[i], dec)} ${c.def.unit === '%' ? '%' : ''}`.trim()}),
+      ...(S.length > 1 ? [el('small', {text:s.name})] : []))));
+  c.tip.style.display = 'block';
+  const tw = c.tip.offsetWidth;
+  c.tip.style.left = (x + 12 + tw > g.w ? x - 12 - tw : x + 12) + 'px'; c.tip.style.top = '6px';
+}
+function drawAll(){ chartEls.forEach(drawChart); }
+
+let histTimer;
+async function loadHistory(){
+  const box = document.getElementById('charts'); box.classList.add('loading');
+  try {
+    const r = await fetch('api/history?range=' + histRange);
+    if (r.ok){ hist = await r.json(); 
+      document.getElementById('histNote').textContent = hist.t.length ? `Averaged per ${hist.bucket < 60 ? hist.bucket + ' s' : Math.round(hist.bucket/60) + ' min'} · history file ${fmt(hist.db_mb,1)} MB` : ''; }
+  } catch (e) {}
+  box.classList.remove('loading'); drawAll();
+  clearTimeout(histTimer); histTimer = setTimeout(loadHistory, histRange <= 21600 ? 15000 : 60000);
+}
+document.getElementById('ranges').addEventListener('click', ev => {
+  const b = ev.target.closest('button'); if (!b) return;
+  histRange = Number(b.dataset.r);
+  document.querySelectorAll('#ranges button').forEach(x => x.setAttribute('aria-pressed', String(x === b)));
+  document.getElementById('csv').href = 'api/history.csv?range=' + histRange;
+  hoverT = null; loadHistory();
+});
+window.addEventListener('resize', drawAll);
+window.matchMedia('(prefers-color-scheme: dark)').addEventListener('change', drawAll);
+
+buildCharts(); loadHistory(); loadEvents(); connect();
 </script>
 </body>
 </html>

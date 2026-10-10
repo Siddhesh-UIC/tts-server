@@ -7,7 +7,8 @@ plus periodic status events. If Solace is unreachable the proxy keeps working.
 Env (defaults in brackets):
   GW_HOST [0.0.0.0]   GW_PORTS [llm:8000,stt:8001,tts:8002]
   GW_UPSTREAMS [llm:http://127.0.0.1:9000,stt:http://127.0.0.1:9001,tts:http://127.0.0.1:9002]
-  SOLACE_HOST, SOLACE_VPN, SOLACE_USERNAME, SOLACE_PASSWORD   (unset = print events to stdout)
+  SOLACE_HOST, SOLACE_VPN, SOLACE_USERNAME, SOLACE_PASSWORD   (unset = no Solace; TELEMETRY_DEBUG=1 prints events)
+  GW_LLM_SERVICES [llm,sahabat]  (services handled as chat-completions LLMs)
   TELEMETRY_PREFIX [ivr/demo/gpu1]   TELEMETRY_TEXT [preview|none|full]   TELEMETRY_PREVIEW_CHARS [200]
   TELEMETRY_STATUS_SEC [10]   SOLACE_TRUST_STORE [/etc/ssl/certs]
   DASHBOARD_INGEST [http://127.0.0.1:3000/ingest]  (request events are also sent to the dashboard; empty = off)
@@ -31,7 +32,9 @@ STATUS_SEC = float(env("TELEMETRY_STATUS_SEC", "10"))
 PORTS = {int(p): s for s, p in (x.split(":") for x in env("GW_PORTS", "llm:8000,stt:8001,tts:8002").split(","))}
 UPSTREAMS = dict(x.split(":", 1) for x in env(
     "GW_UPSTREAMS", "llm:http://127.0.0.1:9000,stt:http://127.0.0.1:9001,tts:http://127.0.0.1:9002").split(","))
-TRACKED = {"llm": ("/v1/chat/completions", "/v1/completions"),
+LLM_LIKE = set(env("GW_LLM_SERVICES", "llm,sahabat").split(","))
+TRACKED = {"sahabat": ("/v1/chat/completions", "/v1/completions"),
+           "llm": ("/v1/chat/completions", "/v1/completions"),
            "stt": ("/v1/audio/transcriptions", "/v1/audio/translations"),
            "tts": ("/v1/audio/speech",)}
 HOP = {b"host", b"content-length", b"connection", b"keep-alive", b"transfer-encoding", b"accept-encoding", b"te", b"upgrade"}
@@ -84,7 +87,8 @@ class Publisher:
             topic, data = self.q.get()
             self._forward_to_dashboard(topic, data)
             if not self.enabled:
-                print(f"[telemetry] {topic} {data}", flush=True); continue
+                if env("TELEMETRY_DEBUG") == "1": print(f"[telemetry] {topic} {data}", flush=True)
+                continue
             try:
                 if pub is None:
                     svc, pub = self._connect()
@@ -124,7 +128,7 @@ class Tracker:
         self.stream = False; self.sse_buf = ""; self.body_buf = bytearray(); self.bytes_out = 0
         self.content = []; self.tools = []; self.finish = None; self.usage = None; self.ttft = None
         self.ctype = ""
-        if svc == "llm":
+        if svc in LLM_LIKE:
             try:
                 j = json.loads(body or b"{}")
                 self.ev["model"] = j.get("model"); self.stream = bool(j.get("stream"))
@@ -142,7 +146,7 @@ class Tracker:
 
     def feed(self, chunk):
         self.bytes_out += len(chunk)
-        if self.svc == "llm" and self.stream:
+        if self.svc in LLM_LIKE and self.stream:
             self.sse_buf += chunk.decode("utf-8", "ignore")
             while "\n" in self.sse_buf:
                 line, self.sse_buf = self.sse_buf.split("\n", 1); line = line.strip()
@@ -171,7 +175,7 @@ class Tracker:
         e = self.ev; e["status"] = status; e["latency_ms"] = round((time.perf_counter() - self.t0) * 1000)
         e["bytes_out"] = self.bytes_out
         if error: e["error"] = error
-        if self.svc == "llm":
+        if self.svc in LLM_LIKE:
             e["stream"] = self.stream
             if not self.stream:
                 try:
@@ -215,7 +219,7 @@ async def proxy(req: Request):
     body = await req.body()
     tracked = req.method == "POST" and req.url.path in TRACKED.get(svc, ())
     tr = Tracker(svc, req, body) if tracked else None
-    if tr and svc == "llm" and tr.stream:   # ask vLLM to include token usage in the final stream chunk
+    if tr and svc in LLM_LIKE and tr.stream:   # ask vLLM to include token usage in the final stream chunk
         try:
             j = json.loads(body); so = j.get("stream_options") or {}; so["include_usage"] = True
             j["stream_options"] = so; body = json.dumps(j).encode()
@@ -265,7 +269,7 @@ async def status_loop():
                 r = await client.get(base + "/health", timeout=3); ev["health"] = r.status_code
             except Exception: ev["health"] = 0
             ev["state"] = {200: "up", 503: "loading"}.get(ev["health"], "down")
-            if svc in ("llm", "stt") and ev["health"] == 200:
+            if (svc in LLM_LIKE or svc == "stt") and ev["health"] == 200:
                 try: ev.update(parse_metrics((await client.get(base + "/metrics", timeout=3)).text))
                 except Exception: pass
             PUB.publish(f"{PREFIX}/{svc}/status", ev)
@@ -296,7 +300,7 @@ def main():
     for port in PORTS:
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM); s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         s.bind((host, port)); socks.append(s)
-    print(f"[gateway] listening on {host} {PORTS} -> {UPSTREAMS}; telemetry {'Solace ' + env('SOLACE_HOST') if PUB.enabled else 'stdout'} prefix={PREFIX} text={TEXT_MODE}", flush=True)
+    print(f"[gateway] listening on {host} {PORTS} -> {UPSTREAMS}; telemetry {'Solace ' + env('SOLACE_HOST') if PUB.enabled else 'off (no SOLACE_HOST)'} prefix={PREFIX} text={TEXT_MODE}", flush=True)
     server = uvicorn.Server(uvicorn.Config(app, log_level="warning", timeout_keep_alive=75))
     asyncio.run(server.serve(sockets=socks))
 
